@@ -29,8 +29,13 @@ spec:
           runAsNonRoot: true
           runAsUser: 999
           allowPrivilegeEscalation: false
-        # LỖ HỔNG ĐƯỢC VÁ: Mount trực tiếp Secret chứa file redis.conf hoàn chỉnh để chống Shell Injection
-        command: ["redis-server", "/etc/redis-secret/redis.conf", "--appendonly", "yes"]
+        # LỖ HỔNG ĐƯỢC VÁ: Đọc mật khẩu từ Secret mount file để tạo redis.conf an toàn lúc khởi động
+        command:
+        - sh
+        - -c
+        - |
+          echo "requirepass $(cat /etc/redis-secret/REDIS_PASSWORD)" > /tmp/redis.conf
+          exec redis-server /tmp/redis.conf --appendonly yes
         ports:
         - containerPort: 6379
         volumeMounts:
@@ -45,8 +50,8 @@ spec:
             command:
             - sh
             - -c
-            # LỖ HỔNG ĐƯỢC VÁ: Parse an toàn từ redis.conf, không dùng Shell Interpolation
-            - "REDISCLI_AUTH=$$(grep requirepass /etc/redis-secret/redis.conf | cut -d' ' -f2) redis-cli ping"
+            # LỖ HỔNG ĐƯỢC VÁ: Đọc mật khẩu trực tiếp từ secret file
+            - "REDISCLI_AUTH=$(cat /etc/redis-secret/REDIS_PASSWORD) redis-cli ping"
           initialDelaySeconds: 5
           timeoutSeconds: 5
   # LỖ HỔNG ĐƯỢC VÁ: Cấp phát Volume cho Redis để tránh mất trắng dữ liệu RAM khi Pod bị khởi động lại
