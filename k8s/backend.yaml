@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: backend-prod
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      # LỖ HỔNG ĐƯỢC VÁ: Thời gian ân hạn phải lớn hơn Gunicorn Timeout (120s) + preStop (5s)
+      terminationGracePeriodSeconds: 130
+      containers:
+      - name: backend
+        # LỖ HỔNG ĐƯỢC VÁ: Cấm dùng tag :latest để đảm bảo Rollback chính xác
+        image: backend:v1.0.0
+        # LỖ HỔNG ĐƯỢC VÁ: Ngăn chặn Hacker leo thang đặc quyền (Privilege Escalation)
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: backend-config
+        # LỖ HỔNG ĐƯỢC VÁ: Mount file Secret thay vì dùng envFrom để tránh lộ qua os.environ
+        volumeMounts:
+        - name: secret-volume
+          mountPath: /run/secrets
+          readOnly: true
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: backend-secrets
+        # LỖ HỔNG ĐƯỢC VÁ: Tránh Cgroup CPU Illusion và cấu hình dựa trên limits.cpu
+        # Công thức: CPU Limit (0.5) * Workers_Per_Core (vd: 2) + 1 = ~2.
+        # Nếu limits.cpu = "1000m" (1 core), hãy tăng giá trị này lên "3" hoặc "4".
+        env:
+        - name: WEB_CONCURRENCY
+          value: "2"
+        # Delay shutdown for K8s iptables to update and prevent SIGTERM race condition
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sleep", "5"]
+        resources:
+          requests:
+            # LỖ HỔNG ĐƯỢC VÁ: Requests = Limits để HPA tính toán chính xác 75%
+            cpu: "500m"
+            # LỖ HỔNG ĐƯỢC VÁ: Argon2id ngốn rất nhiều RAM. Phải cấp 1Gi để chống DoS lúc Login
+            memory: "1Gi"
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+        livenessProbe:
+          httpGet:
+            path: /health/liveness
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /health/readiness
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: backend-prod
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+  selector:
+    app: backend
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: backend-prod
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 75
+  # LỖ HỔNG ĐƯỢC VÁ: Trì hoãn 5 phút trước khi thu nhỏ Pod để chống Flapping Syndrome làm rớt mạng
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300

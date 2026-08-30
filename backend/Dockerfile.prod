@@ -1,0 +1,55 @@
+# Stage 1: Build
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+# LỖ HỔNG ĐƯỢC VÁ: Bắt buộc dùng Lockfile có mã băm (Hash) để chống Supply Chain Attack
+RUN pip wheel --no-cache-dir --no-deps --require-hashes --wheel-dir /app/wheels -r requirements.txt
+
+# Stage 2: Production
+FROM python:3.12-slim
+
+# Create a non-root user
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+
+WORKDIR /app
+
+# Install runtime dependencies (e.g., libpq5 for asyncpg/psycopg2)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy wheels from builder and install
+COPY --from=builder /app/wheels /wheels
+COPY --from=builder /app/requirements.txt .
+RUN pip install --no-cache /wheels/*
+
+# Copy application code
+COPY ./app /app/app
+COPY ./alembic /app/alembic
+COPY alembic.ini /app/
+
+# LỖ HỔNG ĐƯỢC VÁ: Loại bỏ lệnh chown để mã nguồn bị khóa ở chế độ Read-Only đối với appuser. Chống RCE Backdoor.
+
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE 8000
+
+# LỖ HỔNG ĐƯỢC VÁ: Cấm Python ghi bytecode (.pyc) để tránh crash Permission Denied trong môi trường Read-Only
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Start Uvicorn without reload for production
+# LỖ HỔNG ĐƯỢC VÁ: Chạy qua Gunicorn để biến môi trường WEB_CONCURRENCY thực sự sinh ra nhiều Worker
+# LỖ HỔNG ĐƯỢC VÁ: Gunicorn --worker-tmp-dir /dev/shm để ghi file tạm lên RAM thay vì ổ đĩa Read-Only
+# LỖ HỔNG ĐƯỢC VÁ: Nâng Timeout lên 120s và bật keep-alive để cứu Worker khỏi án tử hình (Silent Kill)
+CMD ["gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--forwarded-allow-ips", "*", "--worker-tmp-dir", "/dev/shm", "--timeout", "120", "--keep-alive", "5"]

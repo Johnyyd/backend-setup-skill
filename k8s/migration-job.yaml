@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: backend-db-migration
+  namespace: backend-prod
+  annotations:
+    # LỖ HỔNG ĐƯỢC VÁ: Automation thay vì thủ công.
+    # Đảm bảo Job này chạy TRƯỚC khi apply Deployment mới
+    "helm.sh/hook": pre-upgrade,pre-install
+    "helm.sh/hook-weight": "-5"
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  # Tự động dọn dẹp job sau khi chạy xong (TTL)
+  ttlSecondsAfterFinished: 100
+  template:
+    metadata:
+      name: backend-db-migration
+    spec:
+      restartPolicy: OnFailure
+      backoffLimit: 3
+      # LỖ HỔNG ĐƯỢC VÁ: Ngăn chặn Init Race Condition
+      initContainers:
+      - name: wait-for-postgres
+        image: postgres:15
+        # LỖ HỔNG ĐƯỢC VÁ: Kể cả InitContainer cũng không được chạy quyền root
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 999
+          allowPrivilegeEscalation: false
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready -h database -p 5432 -U postgres; do
+            echo "Waiting for database to become ready..."
+            sleep 2
+          done
+      containers:
+      - name: alembic
+        # LỖ HỔNG ĐƯỢC VÁ: Cấm dùng tag :latest
+        image: backend:v1.0.0
+        # LỖ HỔNG ĐƯỢC VÁ: Ngăn chặn RCE/Privilege Escalation
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+        command: ["alembic", "upgrade", "head"]
+        # LỖ HỔNG ĐƯỢC VÁ: Dùng envFrom cho config (an toàn), nhưng KHÔNG dùng cho Secret
+        envFrom:
+        - configMapRef:
+            name: backend-config
+        # LỖ HỔNG ĐƯỢC VÁ: Ghi đè cấu hình để Migration chọc thẳng Postgres, tránh lỗi DDL do PgBouncer Transaction Pool
+        env:
+        - name: POSTGRES_SERVER
+          value: "database"
+        - name: POSTGRES_PORT
+          value: "5432"
+        # LỖ HỔNG ĐƯỢC VÁ: Mount Secret an toàn
+        volumeMounts:
+        - name: secret-volume
+          mountPath: /run/secrets
+          readOnly: true
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: backend-secrets

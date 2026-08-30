@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: database
+  namespace: backend-prod
+spec:
+  serviceName: "database"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database
+  template:
+    metadata:
+      labels:
+        app: database
+    spec:
+      # LỖ HỔNG ĐƯỢC VÁ: Cấp quyền chown cho volume của Postgres để user 999 có thể ghi dữ liệu
+      securityContext:
+        fsGroup: 999
+      containers:
+      - name: postgres
+        image: postgres:15
+        # LỖ HỔNG ĐƯỢC VÁ: Không ép runAsNonRoot ở cấp độ container để script docker-entrypoint.sh của Postgres có quyền root lúc boot (chown volume) trước khi tự hạ quyền xuống 999.
+        securityContext:
+          allowPrivilegeEscalation: false
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: POSTGRES_USER
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: POSTGRES_DB
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: POSTGRES_PASSWORD
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        # LỖ HỔNG ĐƯỢC VÁ: Startup Probe bảo vệ lúc Initdb ổ đĩa trắng, tránh bị Liveness giết nhầm
+        startupProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          failureThreshold: 30
+          periodSeconds: 10
+        # LỖ HỔNG ĐƯỢC VÁ: Đã xóa livenessProbe trên ứng dụng Stateful (Postgres) để tránh Corrupted WAL khi Checkpoint
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 5
+          timeoutSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: database
+  namespace: backend-prod
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: database
+---
+# LỖ HỔNG ĐƯỢC VÁ: Triển khai PgBouncer (Transaction Pooling) để tránh HPA Connection Paradox
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer
+  namespace: backend-prod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pgbouncer
+  template:
+    metadata:
+      labels:
+        app: pgbouncer
+    spec:
+      containers:
+      - name: pgbouncer
+        # LỖ HỔNG ĐƯỢC VÁ: Cấm dùng tag :latest cho image hạ tầng
+        image: edoburu/pgbouncer:1.21.0
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+        env:
+        - name: DATABASE_URL
+          value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@database:5432/$(POSTGRES_DB)"
+        - name: POOL_MODE
+          value: "transaction"
+        - name: MAX_CLIENT_CONN
+          value: "1000"
+        - name: DEFAULT_POOL_SIZE
+          value: "20"
+        # LỖ HỔNG ĐƯỢC VÁ: Postgres 15 dùng SCRAM-SHA-256. Báo cho PgBouncer để không lỗi Auth
+        - name: AUTH_TYPE
+          value: "scram-sha-256"
+        envFrom:
+        - configMapRef:
+            name: backend-config
+        - secretRef:
+            name: backend-secrets
+        ports:
+        - containerPort: 6432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer-service
+  namespace: backend-prod
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6432
+    targetPort: 6432
+  selector:
+    app: pgbouncer

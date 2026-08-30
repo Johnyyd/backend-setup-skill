@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: backend-prod
+data:
+  PROJECT_NAME: "Backend Setup Project"
+  ENVIRONMENT: "production"
+  POSTGRES_USER: "postgres"
+  POSTGRES_DB: "backend_db"
+  # LỖ HỔNG ĐƯỢC VÁ: Chỉ kết nối vào DB thông qua PgBouncer, tuyệt đối không chọc thẳng vào Postgres
+  POSTGRES_SERVER: "pgbouncer-service"
+  POSTGRES_PORT: "6432"
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+---
+# LỖ HỔNG ĐƯỢC VÁ: Không lưu trữ Secret plaintext (Base64) trong Git.
+#
+# Kiến trúc chuẩn Production yêu cầu hệ thống quản lý Secret tự động:
+# 1. Nếu dùng AWS: Sử dụng External Secrets Operator đồng bộ từ AWS Secrets Manager.
+# 2. Nếu tự host: Sử dụng HashiCorp Vault.
+# 3. Giải pháp thay thế (GitOps): Dùng Bitnami SealedSecrets mã hóa Secret trước khi commit.
+#
+# Ví dụ về một ExternalSecret object (chỉ mang tính minh họa):
+# apiVersion: external-secrets.io/v1beta1
+# kind: ExternalSecret
+# metadata:
+#   name: backend-secrets
+#   namespace: backend-prod
+# spec:
+#   refreshInterval: "1h"
+#   secretStoreRef:
+#     name: aws-secretsmanager
+#     kind: ClusterSecretStore
+#   target:
+#     name: backend-secrets
+#     creationPolicy: Owner
+#   data:
+#   - secretKey: SECRET_KEY
+#     remoteRef:
+#       key: backend/production
+#       property: SECRET_KEY

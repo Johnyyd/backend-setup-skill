@@ -1,0 +1,127 @@
+version: '3.8'
+
+services:
+  db:
+    # LỖ HỔNG ĐƯỢC VÁ: Đồng nhất Postgres 15 với CI/CD và Prod
+    image: postgres:15
+    container_name: postgres
+    restart: unless-stopped
+    # LỖ HỔNG ĐƯỢC VÁ: Cấu hình vòng đời log để tránh phình to làm sập đĩa cứng (Log Exhaustion)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    # LỖ HỔNG ĐƯỢC VÁ: Cấu hình vòng đời log
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # LỖ HỔNG ĐƯỢC VÁ: Đồng bộ bảo mật Redis với Prod, dùng file config thay vì CLI argument
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./redis-local.conf:/usr/local/etc/redis/redis.conf
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "$$REDIS_PASSWORD", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # LỖ HỔNG ĐƯỢC VÁ: Bổ sung PgBouncer tại Local để DEV không bị lỗi Transaction Pool khi lên Prod
+  pgbouncer:
+    image: edoburu/pgbouncer:1.21.0
+    container_name: pgbouncer
+    restart: unless-stopped
+    # LỖ HỔNG ĐƯỢC VÁ: Cấu hình vòng đời log
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - POOL_MODE=transaction
+      - MAX_CLIENT_CONN=100
+      - DEFAULT_POOL_SIZE=10
+      - AUTH_TYPE=scram-sha-256
+    ports:
+      - "6432:6432"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backend:
+    container_name: backend
+    restart: unless-stopped
+    # LỖ HỔNG ĐƯỢC VÁ: Cấu hình vòng đời log
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    env_file:
+      - .env
+    environment:
+      # LỖ HỔNG ĐƯỢC VÁ: Ép backend local phải kết nối qua PgBouncer giống y hệt K8s Production
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB}
+      # LỖ HỔNG ĐƯỢC VÁ: Cấp thêm biến nối thẳng để Alembic Local chạy DDL không bị sập PgBouncer. Lưu ý dùng asyncpg để tương thích với alembic env.py
+      - SYNC_DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./backend/app:/app/app  # For development, remove in production
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/tests:/app/tests
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    restart: unless-stopped
+    # LỖ HỔNG ĐƯỢC VÁ: Cấu hình vòng đời log
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./frontend:/usr/share/nginx/html:ro  # Serve frontend from here
+      - ./nginx/certs:/etc/nginx/certs:ro   # SSL certificates (if any)
+
+volumes:
+  postgres_data:

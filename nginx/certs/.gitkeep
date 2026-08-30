@@ -1,0 +1,2 @@
+# Place SSL certificates here for production.
+# Required files: fullchain.pem and privkey.pem

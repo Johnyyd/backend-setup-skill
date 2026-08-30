@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: backend-prod
+spec:
+  serviceName: "redis-service"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      # LỖ HỔNG ĐƯỢC VÁ: Cấp quyền chown cho volume của Redis để user 999 có thể ghi AOF log
+      securityContext:
+        fsGroup: 999
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: backend-secrets
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        # LỖ HỔNG ĐƯỢC VÁ: Ngăn chặn Leo thang đặc quyền (Privilege Escalation)
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 999
+          allowPrivilegeEscalation: false
+        # LỖ HỔNG ĐƯỢC VÁ: Mount trực tiếp Secret chứa file redis.conf hoàn chỉnh để chống Shell Injection
+        command: ["redis-server", "/etc/redis-secret/redis.conf", "--appendonly", "yes"]
+        ports:
+        - containerPort: 6379
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        - name: secret-volume
+          mountPath: /etc/redis-secret
+          readOnly: true
+        # LỖ HỔNG ĐƯỢC VÁ: LivenessProbe đã bị xóa khỏi ứng dụng Stateful
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            # LỖ HỔNG ĐƯỢC VÁ: Parse an toàn từ redis.conf, không dùng Shell Interpolation
+            - "REDISCLI_AUTH=$$(grep requirepass /etc/redis-secret/redis.conf | cut -d' ' -f2) redis-cli ping"
+          initialDelaySeconds: 5
+          timeoutSeconds: 5
+  # LỖ HỔNG ĐƯỢC VÁ: Cấp phát Volume cho Redis để tránh mất trắng dữ liệu RAM khi Pod bị khởi động lại
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: backend-prod
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: redis
