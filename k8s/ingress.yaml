@@ -12,6 +12,12 @@ metadata:
     nginx.ingress.kubernetes.io/cors-allow-origin: "https://yourfrontenddomain.com"
     # LỖ HỔNG ĐƯỢC VÁ: Cache OPTIONS Preflight trong 24h để tránh nhân đôi số lượng Request
     nginx.ingress.kubernetes.io/cors-max-age: "86400"
+    # LỖ HỔNG ĐƯỢC VÁ: Chặn Public Dashboard/Metrics Leak, trả về 403 nếu cố truy cập /metrics
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location /metrics {
+        deny all;
+        return 403;
+      }
 spec:
   tls:
   - hosts:

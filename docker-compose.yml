@@ -48,7 +48,7 @@ services:
 
   # LỖ HỔNG ĐƯỢC VÁ: Bổ sung PgBouncer tại Local để DEV không bị lỗi Transaction Pool khi lên Prod
   pgbouncer:
-    image: edoburu/pgbouncer:1.21.0
+    image: edoburu/pgbouncer:latest
     container_name: pgbouncer
     restart: unless-stopped
     # LỖ HỔNG ĐƯỢC VÁ: Cấu hình vòng đời log

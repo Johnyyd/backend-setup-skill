@@ -31,8 +31,19 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 async def get_user_crud(db: AsyncSession = Depends(get_db)) -> IUserRepository:
     return UserRepository(session=db)
 
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app.dependency_overrides[IUserRepository] = get_user_crud
 
+# LỖ HỔNG ĐƯỢC VÁ: Nhóm các endpoint có chứa ID lại thành một template duy nhất (Chống Tràn RAM)
+instrumentator = Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    should_group_untemplated=False,
+    inprogress_name="inprogress",
+    inprogress_labels=True,
+)
+instrumentator.instrument(app).expose(app, include_in_schema=False)
 @app.on_event("startup")
 async def startup_event():
     await init_redis()

@@ -1,0 +1,33 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: backend-alerts
+  namespace: monitoring
+  labels:
+    release: prometheus # Phải khớp với label của kube-prometheus-stack
+spec:
+  groups:
+  - name: backend.rules
+    rules:
+    # 1. Cảnh báo CPU Backend
+    - alert: BackendHighCPU
+      # Tính toán % CPU của Pod backend (dựa trên limits)
+      expr: sum(node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate{namespace="backend-prod", container="backend"}) by (pod) / sum(kube_pod_container_resource_limits{resource="cpu", namespace="backend-prod", container="backend"}) > 0.8
+      for: 5m # LỖ HỔNG ĐƯỢC VÁ: Chờ 5 phút để loại bỏ vi mô (Micro-burst)
+      labels:
+        severity: critical
+        team: backend
+      annotations:
+        summary: "Pod {{ $labels.pod }} đang quá tải CPU"
+        description: "CPU của Backend Pod {{ $labels.pod }} đã vượt quá 80% trong 5 phút qua."
+
+    # 2. Cảnh báo Postgres Mất kết nối
+    - alert: PostgresDown
+      expr: pg_up == 0 # Trạng thái Up của Postgres Exporter trả về 0
+      for: 1m
+      labels:
+        severity: disaster # Đánh dấu mức độ thảm họa
+        team: database
+      annotations:
+        summary: "PostgreSQL Database SẬP!"
+        description: "Không thể kết nối đến Database. Toàn bộ API có thể đang bị gián đoạn."

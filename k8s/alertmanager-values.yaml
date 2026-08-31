@@ -1,0 +1,47 @@
+alertmanager:
+  alertmanagerSpec:
+    # Yêu cầu Alertmanager nạp các Secret vừa tạo ở trên vào biến môi trường
+    secrets:
+      - alertmanager-secrets
+
+  config:
+    global:
+      # Nếu dùng Slack
+      slack_api_url_file: /etc/alertmanager/secrets/alertmanager-secrets/slack-url
+      # Nếu dùng Telegram
+      telegram_api_url: "https://api.telegram.org"
+
+    # LỖ HỔNG ĐƯỢC VÁ: Chống Bão Cảnh Báo (Alert Storm)
+    route:
+      group_by: ['namespace', 'alertname'] # Gom các lỗi giống nhau vào 1 tin
+      group_wait: 30s                      # Chờ 30s xem có lỗi nào giống vậy không thì gom lại
+      group_interval: 5m                   # Chờ 5 phút mới gửi báo cáo cập nhật tiếp theo
+      repeat_interval: 1h                  # Lặp lại cảnh báo sau 1 giờ nếu chưa ai fix
+      receiver: 'telegram-backend-team'    # Mặc định gửi về đây
+      
+      routes:
+      - matchers:
+          - severity="disaster"            # Các lỗi sập DB (Disaster) gửi song song cả Slack và Telegram
+        receiver: 'critical-alerts'
+        continue: false
+
+    receivers:
+    - name: 'telegram-backend-team'
+      telegram_configs:
+      - bot_token_file: /etc/alertmanager/secrets/alertmanager-secrets/telegram-bot-token
+        chat_id_file: /etc/alertmanager/secrets/alertmanager-secrets/telegram-chat-id
+        message: |-
+          🚨 *CẢNH BÁO HỆ THỐNG* 🚨
+          {{ range .Alerts }}
+          *Tên:* {{ .Annotations.summary }}
+          *Chi tiết:* {{ .Annotations.description }}
+          *Trạng thái:* {{ .Status }}
+          {{ end }}
+
+    - name: 'critical-alerts'
+      # Gửi song song đa kênh cho lỗi nghiêm trọng
+      slack_configs:
+      - channel: '#prod-alerts'
+        title: "[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}"
+        text: "{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}"
+        send_resolved: true # Gửi tin nhắn màu xanh khi hệ thống sống lại

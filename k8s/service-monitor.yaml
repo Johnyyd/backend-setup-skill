@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend-monitor
+  namespace: backend-prod
+  labels:
+    # Nhãn này BẮT BUỘC phải khớp với cấu hình của kube-prometheus-stack
+    release: prometheus 
+spec:
+  selector:
+    matchLabels:
+      app: backend # Trỏ đúng vào label của Service Backend
+  endpoints:
+  - port: http # Phải khớp với tên port định nghĩa trong backend Service
+    path: /metrics
+    interval: 15s # Cứ 15 giây cào dữ liệu 1 lần
